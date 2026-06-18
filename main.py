@@ -45,8 +45,10 @@ app = FastAPI(title="AI Transcriber API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+    max_age=600,
 )
 
 # ---------------------------------------------------------------------------
@@ -119,7 +121,7 @@ def _worker(job_id: str, audio_path: str, model_size: str, lang, task: str, mult
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "ok", "service": "AI Transcriber API"}
 
