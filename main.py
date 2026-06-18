@@ -6,6 +6,7 @@ Render deploy: build=pip install -r requirements.txt | start=uvicorn main:app --
 import os
 import re
 import uuid
+import json
 import threading
 import datetime
 from pathlib import Path
@@ -81,9 +82,40 @@ def _srt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 # ---------------------------------------------------------------------------
-# Background transcription worker
+# Job persistence — survives server restarts
 # ---------------------------------------------------------------------------
 JOBS: dict = {}
+
+def _meta_path(job_id: str) -> Path:
+    return OUTPUT_DIR / f"{job_id}.meta.json"
+
+def _save_job(job_id: str, job: dict):
+    data = {k: v for k, v in job.items() if k != "txt_path"}
+    try:
+        with open(_meta_path(job_id), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def _load_job(job_id: str) -> dict | None:
+    path = _meta_path(job_id)
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        data["txt_path"] = str(OUTPUT_DIR / f"{job_id}.txt")
+        # If the server restarted while the job was running, mark it as error
+        if data.get("status") == "running":
+            data["status"] = "error"
+            data["error"]  = "Server restarted mid-job. Please upload again."
+        return data
+    except Exception:
+        return None
+
+# ---------------------------------------------------------------------------
+# Background transcription worker
+# ---------------------------------------------------------------------------
 
 def _worker(job_id: str, audio_path: str, model_size: str, lang, task: str, multilingual: bool, prompt):
     job = JOBS[job_id]
@@ -108,9 +140,11 @@ def _worker(job_id: str, audio_path: str, model_size: str, lang, task: str, mult
                 job["progress"] = min(seg.end / total, 0.999) if total else 0.0
         job["progress"] = 1.0
         job["status"]   = "completed"
+        _save_job(job_id, job)
     except Exception as e:
         job["status"] = "error"
         job["error"]  = str(e)
+        _save_job(job_id, job)
     finally:
         try:
             os.remove(audio_path)
@@ -167,9 +201,9 @@ async def start_transcribe(
 
 @app.get("/api/job/{job_id}")
 def get_job(job_id: str):
-    if job_id not in JOBS:
+    job = JOBS.get(job_id) or _load_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    job = JOBS[job_id]
     transcript = ""
     if os.path.exists(job["txt_path"]):
         try:
