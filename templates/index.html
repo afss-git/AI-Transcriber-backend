@@ -88,12 +88,13 @@
           <div>
             <label class="block text-xs font-medium text-slate-500 mb-1.5">Model</label>
             <select v-model="model" class="w-full text-sm rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500">
-              <option value="tiny">Tiny — Fastest, basic accuracy</option>
-              <option value="base">Base — Very fast, decent accuracy</option>
-              <option value="small">Small — Balanced (recommended)</option>
-              <option value="medium">Medium — Good accuracy, slower</option>
-              <option value="large-v3">Large-v3 — Best accuracy, slowest</option>
+              <option value="tiny">Tiny — Fastest (recommended for free server)</option>
+              <option value="base">Base — Fast, a bit more accurate</option>
+              <option value="small">Small — Balanced (may crash on free RAM)</option>
+              <option value="medium">Medium — Accurate, needs paid server</option>
+              <option value="large-v3">Large-v3 — Best, needs paid server</option>
             </select>
+            <p class="mt-1.5 text-xs text-slate-400">On the free server, stick with <strong>Tiny</strong> or <strong>Base</strong>. Bigger models need more memory than the free tier allows.</p>
           </div>
           <div>
             <label class="block text-xs font-medium text-slate-500 mb-1.5">Language</label>
@@ -283,7 +284,7 @@ createApp({
     const errMsg        = ref('')
     const wakeMsg       = ref('')
     const jobId         = ref(null)
-    const model         = ref('small')
+    const model         = ref('tiny')
     const language      = ref('auto-detect')
     const multilingual  = ref(false)
     const task          = ref('transcribe')

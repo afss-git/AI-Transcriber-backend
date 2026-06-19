@@ -136,7 +136,9 @@ def _worker(job_id, audio_path, model_size, lang, task, multilingual, prompt):
 
 @app.route("/", methods=["GET"])
 def root():
-    return send_from_directory(APP_DIR / "templates", "index.html")
+    resp = send_from_directory(APP_DIR / "templates", "index.html")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 @app.route("/", methods=["HEAD"])
 def root_head():
@@ -153,7 +155,7 @@ def start_transcribe():
         return jsonify({"error": "No file uploaded"}), 400
 
     file         = request.files["file"]
-    model_size   = request.form.get("model", "small")
+    model_size   = request.form.get("model", "tiny")
     language     = request.form.get("language", "auto-detect")
     multilingual = request.form.get("multilingual", "false").lower() == "true"
     task         = request.form.get("task", "transcribe")
@@ -178,6 +180,7 @@ def start_transcribe():
         "error":    None,
         "lang":     None,
     }
+    _save_job(job_id, JOBS[job_id])  # persist immediately so a restart can report gracefully
 
     threading.Thread(
         target=_worker,
