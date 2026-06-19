@@ -314,11 +314,11 @@ createApp({
     function onDrop(e) {
       isDragging.value = false
       const f = e.dataTransfer?.files?.[0]
-      if (f) selectedFile.value = f
+      if (f) { reset(); selectedFile.value = f }
     }
     function onFileInput(e) {
       const f = e.target.files?.[0]
-      if (f) selectedFile.value = f
+      if (f) { reset(); selectedFile.value = f }
     }
     function removeFile() { selectedFile.value = null; reset() }
 
