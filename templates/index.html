@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Transcriber</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+          colors: { brand: { 50:'#eef2ff', 100:'#e0e7ff', 500:'#6366f1', 600:'#4f46e5', 700:'#4338ca' } }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <style>
+    [v-cloak]{display:none}
+    .prose h2{font-weight:600;font-size:1em;margin:.75em 0 .4em;color:#1e293b}
+    .prose h3{font-weight:600;font-size:.9em;margin:.6em 0 .3em;color:#1e293b}
+    .prose p{margin:.4em 0}
+    .prose ul,.prose ol{padding-left:1.2em;margin:.4em 0}
+    .prose li{margin:.15em 0}
+    .prose strong{font-weight:600}
+  </style>
+</head>
+<body class="bg-slate-50 font-sans min-h-screen">
+<div id="app" v-cloak>
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-10">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
+      <div class="w-9 h-9 bg-brand-600 rounded-xl flex items-center justify-center text-xl shadow-sm">🎙️</div>
+      <div>
+        <h1 class="text-base font-bold text-slate-900 leading-none">AI Transcriber</h1>
+        <p class="text-xs text-slate-400 mt-0.5">Powered by Whisper + Groq</p>
+      </div>
+      <div class="ml-auto">
+        <span v-if="status==='transcribing'" class="hidden sm:flex items-center gap-1.5 text-xs text-brand-600 bg-brand-50 px-3 py-1.5 rounded-full font-medium">
+          <span class="w-1.5 h-1.5 bg-brand-500 rounded-full animate-pulse"></span>Transcribing {{ progressPct }}%
+        </span>
+        <span v-if="status==='completed'" class="hidden sm:flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full font-medium">✓ Done</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main grid -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5">
+
+    <!-- ── LEFT: Settings ─────────────────────────────────────────── -->
+    <aside class="space-y-4">
+
+      <!-- Upload card -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+        <h2 class="text-sm font-semibold text-slate-700 mb-3">Upload File</h2>
+        <label v-if="!selectedFile"
+          class="flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl p-8 cursor-pointer transition-all"
+          :class="isDragging ? 'border-brand-500 bg-brand-50' : 'border-slate-300 hover:border-brand-400 hover:bg-slate-50'"
+          @dragover.prevent="isDragging=true" @dragleave="isDragging=false" @drop.prevent="onDrop">
+          <span class="text-3xl">{{ isDragging ? '📂' : '🎵' }}</span>
+          <span class="text-sm font-medium text-slate-600">{{ isDragging ? 'Release to upload' : 'Drop audio or video here' }}</span>
+          <span class="text-xs text-slate-400">mp3, mp4, wav, m4a, webm, …</span>
+          <span class="mt-1 text-xs text-brand-600 font-medium bg-brand-50 px-3 py-1 rounded-full">Browse files</span>
+          <input type="file" class="hidden" accept="audio/*,video/*" @change="onFileInput">
+        </label>
+        <div v-else class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+          <span class="text-2xl flex-shrink-0">🎵</span>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium text-slate-800 truncate">{{ selectedFile.name }}</p>
+            <p class="text-xs text-slate-400">{{ fmtBytes(selectedFile.size) }}</p>
+          </div>
+          <button v-if="!isBusy" @click="removeFile" class="w-7 h-7 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 transition-colors flex-shrink-0">×</button>
+        </div>
+      </div>
+
+      <!-- Settings card -->
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <button class="w-full flex items-center justify-between px-5 py-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors" @click="showSettings=!showSettings">
+          <span>⚙️ Settings</span>
+          <span class="text-slate-400" :style="showSettings?'transform:rotate(180deg);display:inline-block':''">▾</span>
+        </button>
+        <div v-show="showSettings" class="px-5 pb-5 space-y-4 border-t border-slate-100">
+          <div>
+            <label class="block text-xs font-medium text-slate-500 mb-1.5">Model</label>
+            <select v-model="model" class="w-full text-sm rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500">
+              <option value="tiny">Tiny — Fastest, basic accuracy</option>
+              <option value="base">Base — Very fast, decent accuracy</option>
+              <option value="small">Small — Balanced (recommended)</option>
+              <option value="medium">Medium — Good accuracy, slower</option>
+              <option value="large-v3">Large-v3 — Best accuracy, slowest</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-500 mb-1.5">Language</label>
+            <select v-model="language" :disabled="multilingual" class="w-full text-sm rounded-lg border border-slate-200 bg-white px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:opacity-50">
+              <option value="auto-detect">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="ar">Arabic</option>
+              <option value="fr">French</option>
+              <option value="es">Spanish</option>
+              <option value="de">German</option>
+              <option value="ur">Urdu</option>
+              <option value="hi">Hindi</option>
+              <option value="tr">Turkish</option>
+              <option value="ha">Hausa</option>
+            </select>
+          </div>
+          <label class="flex items-start gap-3 cursor-pointer">
+            <div class="relative mt-0.5 flex-shrink-0">
+              <input type="checkbox" v-model="multilingual" class="sr-only peer">
+              <div class="w-9 h-5 bg-slate-200 peer-checked:bg-brand-600 rounded-full transition-colors"></div>
+              <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-4"></div>
+            </div>
+            <div>
+              <p class="text-sm font-medium text-slate-700">🌐 Multilingual</p>
+              <p class="text-xs text-slate-400">Best for mixed-language audio (e.g. Arabic + English)</p>
+            </div>
+          </label>
+          <div>
+            <label class="block text-xs font-medium text-slate-500 mb-1.5">Task</label>
+            <div class="flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+              <button @click="task='transcribe'" class="flex-1 py-2 text-center transition-colors" :class="task==='transcribe'?'bg-brand-600 text-white font-medium':'bg-white text-slate-600 hover:bg-slate-50'">Transcribe</button>
+              <button @click="task='translate'" class="flex-1 py-2 text-center transition-colors border-l border-slate-200" :class="task==='translate'?'bg-brand-600 text-white font-medium':'bg-white text-slate-600 hover:bg-slate-50'">→ English</button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-500 mb-1.5">Key names & terms <span class="font-normal">(optional)</span></label>
+            <textarea v-model="keyTerms" rows="2" placeholder="e.g. Hamza Yusuf, taqwa, Qur'an" class="w-full text-sm rounded-lg border border-slate-200 px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 placeholder-slate-300"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transcribe button -->
+      <button @click="transcribe" :disabled="!canTranscribe||isBusy"
+        class="w-full py-3.5 rounded-xl text-sm font-semibold transition-all"
+        :class="canTranscribe&&!isBusy?'bg-brand-600 hover:bg-brand-700 text-white shadow-md':'bg-slate-100 text-slate-400 cursor-not-allowed'">
+        <span v-if="status==='uploading'">⬆️ Uploading…</span>
+        <span v-else-if="status==='transcribing'">🔴 Transcribing {{ progressPct }}%</span>
+        <span v-else>▶ Transcribe</span>
+      </button>
+
+      <div v-if="errMsg" class="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+        <span>❌</span><span>{{ errMsg }}</span>
+      </div>
+    </aside>
+
+    <!-- ── RIGHT: Results ─────────────────────────────────────────── -->
+    <section class="flex flex-col gap-4 min-h-[600px]">
+
+      <!-- Progress -->
+      <div v-if="isBusy" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 bg-brand-500 rounded-full animate-pulse"></span>
+            <span class="text-sm font-medium text-slate-700">{{ status==='uploading' ? 'Uploading file…' : 'Transcribing audio…' }}</span>
+          </div>
+          <span class="text-sm font-semibold text-brand-600">{{ progressPct }}%</span>
+        </div>
+        <div class="h-2 bg-slate-100 rounded-full overflow-hidden">
+          <div class="h-full bg-gradient-to-r from-brand-500 to-brand-600 rounded-full transition-all duration-700" :style="{width:Math.max(progressPct,3)+'%'}"></div>
+        </div>
+        <div v-if="progressTotal>0" class="flex justify-between mt-2 text-xs text-slate-400">
+          <span>{{ fmtTime(progressDone) }} / {{ fmtTime(progressTotal) }}</span>
+          <span v-if="detectedLang">🌐 {{ detectedLang }}</span>
+        </div>
+        <div v-if="transcript" class="mt-4 max-h-40 overflow-y-auto text-xs text-slate-500 bg-slate-50 rounded-lg p-3 leading-relaxed">{{ transcript.split('\n').slice(-8).join('\n') }}</div>
+        <div v-if="wakeMsg" class="mt-3 text-xs text-amber-600 bg-amber-50 rounded-lg p-2.5">{{ wakeMsg }}</div>
+      </div>
+
+      <!-- Idle -->
+      <div v-if="status==='idle'&&!activeTx" class="flex-1 bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col items-center justify-center p-12 text-center">
+        <div class="text-5xl mb-4">🎙️</div>
+        <h2 class="text-lg font-semibold text-slate-700 mb-2">Ready to transcribe</h2>
+        <p class="text-sm text-slate-400 max-w-xs mb-6">Upload an audio or video file on the left, then click <strong>Transcribe</strong>.</p>
+        <div class="w-full max-w-md">
+          <label class="block text-xs font-medium text-slate-500 mb-2 text-left">Or paste a transcript to use AI directly</label>
+          <textarea v-model="pastedTx" rows="4" placeholder="Paste any transcript text here…" class="w-full text-sm rounded-xl border border-slate-200 px-3 py-2.5 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 placeholder-slate-300"></textarea>
+          <button v-if="pastedTx.trim()" @click="activeTab='ai'" class="mt-2 w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-xl transition-colors">Use This Transcript with AI →</button>
+        </div>
+      </div>
+
+      <!-- Tabs (transcript / AI) -->
+      <div v-if="status==='completed'||activeTx" class="flex-1 flex flex-col bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+
+        <div class="flex border-b border-slate-200">
+          <button @click="activeTab='transcript'" class="flex-1 py-3.5 text-sm font-medium transition-colors border-b-2 -mb-px" :class="activeTab==='transcript'?'border-brand-600 text-brand-600':'border-transparent text-slate-500 hover:text-slate-700'">📄 Transcript</button>
+          <button @click="activeTab='ai'" class="flex-1 py-3.5 text-sm font-medium transition-colors border-b-2 -mb-px" :class="activeTab==='ai'?'border-brand-600 text-brand-600':'border-transparent text-slate-500 hover:text-slate-700'">🤖 AI Assistant</button>
+        </div>
+
+        <!-- Transcript -->
+        <div v-show="activeTab==='transcript'" class="flex-1 flex flex-col p-5 gap-4 overflow-hidden">
+          <div class="flex items-center justify-between">
+            <div class="flex gap-2">
+              <span v-if="status==='completed'" class="text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full font-medium">✓ Completed</span>
+              <span v-if="detectedLang" class="text-xs text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">🌐 {{ detectedLang }}</span>
+            </div>
+            <button @click="activeTab='ai'" class="text-xs text-brand-600 hover:underline font-medium">Use with AI →</button>
+          </div>
+          <textarea :value="transcript||pastedTx" readonly class="flex-1 min-h-[400px] text-sm text-slate-700 bg-slate-50 rounded-xl border border-slate-200 p-4 resize-none leading-relaxed focus:outline-none"></textarea>
+          <div class="flex gap-2">
+            <button @click="copyTx" class="flex-1 py-2.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-colors">📋 Copy</button>
+            <a v-if="transcript" :href="'data:text/plain;charset=utf-8,'+encodeURIComponent(transcript)" download="transcript.txt" class="flex-1 py-2.5 text-sm font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition-colors text-center">⬇️ Download .txt</a>
+          </div>
+        </div>
+
+        <!-- AI Assistant -->
+        <div v-show="activeTab==='ai'" class="flex-1 flex flex-col overflow-hidden">
+          <div class="px-4 pt-4 pb-3 border-b border-slate-100">
+            <p class="text-xs font-medium text-slate-400 mb-2">Quick actions</p>
+            <div class="flex flex-wrap gap-1.5">
+              <button v-for="q in quickPrompts" :key="q.label" @click="useQuick(q.prompt)" class="text-xs px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:border-brand-400 hover:text-brand-600 hover:bg-brand-50 transition-all text-slate-600 font-medium">{{ q.label }}</button>
+            </div>
+            <div v-if="!activeTx" class="mt-3">
+              <textarea v-model="pastedTx" rows="2" placeholder="Paste transcript here first…" class="w-full text-xs rounded-lg border border-slate-200 px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 placeholder-slate-300"></textarea>
+            </div>
+          </div>
+
+          <div ref="chatEl" class="flex-1 overflow-y-auto p-4 space-y-4" style="min-height:0">
+            <div v-if="!chatHistory.length" class="flex flex-col items-center justify-center h-full text-center py-8">
+              <div class="text-4xl mb-3">🤖</div>
+              <p class="text-sm text-slate-400 max-w-xs">{{ activeTx ? 'Ask me to summarise, format, or restructure your transcript.' : 'Paste a transcript above, then ask me anything.' }}</p>
+            </div>
+            <div v-for="(msg,i) in chatHistory" :key="i" class="flex gap-2.5" :class="msg.role==='user'?'justify-end':'justify-start'">
+              <div v-if="msg.role==='assistant'" class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center text-sm flex-shrink-0 mt-0.5">🤖</div>
+              <div class="max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed"
+                :class="msg.role==='user'?'bg-brand-600 text-white rounded-br-sm':'bg-slate-100 text-slate-800 rounded-bl-sm prose'"
+                v-html="msg.role==='assistant'?renderMd(msg.content):msg.content">
+              </div>
+              <div v-if="msg.role==='user'" class="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center text-sm flex-shrink-0 mt-0.5">👤</div>
+            </div>
+            <div v-if="aiLoading" class="flex gap-2.5">
+              <div class="w-7 h-7 rounded-full bg-brand-100 flex items-center justify-center text-sm flex-shrink-0">🤖</div>
+              <div class="bg-slate-100 rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-1">
+                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay:0ms"></span>
+                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay:150ms"></span>
+                <span class="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style="animation-delay:300ms"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-4 border-t border-slate-100 space-y-2">
+            <div class="flex gap-2">
+              <textarea v-model="userInput" rows="2" placeholder="Ask the AI anything about your transcript…"
+                class="flex-1 text-sm rounded-xl border border-slate-200 px-3 py-2.5 resize-none focus:outline-none focus:ring-2 focus:ring-brand-500 placeholder-slate-300"
+                :disabled="aiLoading" @keydown.enter.exact.prevent="sendMsg">
+              </textarea>
+              <div class="flex flex-col gap-2">
+                <button @click="sendMsg" :disabled="!userInput.trim()||aiLoading"
+                  class="px-4 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                  :class="userInput.trim()&&!aiLoading?'bg-brand-600 hover:bg-brand-700 text-white':'bg-slate-100 text-slate-400 cursor-not-allowed'">Send</button>
+                <button @click="chatHistory=[]" class="px-3 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors">Clear</button>
+              </div>
+            </div>
+            <button v-if="lastReply" @click="dlDocx" class="w-full py-2 text-xs font-medium bg-slate-800 hover:bg-slate-900 text-white rounded-xl transition-colors">📄 Download as Word (.docx)</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="text-center py-6 text-xs text-slate-400">AI Transcriber · Powered by <strong>Whisper</strong> + <strong>Groq Llama 3</strong></footer>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, nextTick, onMounted } = Vue
+
+createApp({
+  setup() {
+    // State
+    const status        = ref('idle')
+    const selectedFile  = ref(null)
+    const isDragging    = ref(false)
+    const progress      = ref(0)
+    const progressDone  = ref(0)
+    const progressTotal = ref(0)
+    const detectedLang  = ref('')
+    const transcript    = ref('')
+    const errMsg        = ref('')
+    const wakeMsg       = ref('')
+    const jobId         = ref(null)
+    const model         = ref('small')
+    const language      = ref('auto-detect')
+    const multilingual  = ref(false)
+    const task          = ref('transcribe')
+    const keyTerms      = ref('')
+    const showSettings  = ref(false)
+    const chatHistory   = ref([])
+    const aiLoading     = ref(false)
+    const userInput     = ref('')
+    const pastedTx      = ref('')
+    const activeTab     = ref('transcript')
+    const chatEl        = ref(null)
+    let pollTimer       = null
+
+    const quickPrompts = [
+      { label:'📋 Meeting Minutes',     prompt:'Format this transcript as professional meeting minutes with sections for Attendees, Agenda, Key Decisions, Action Items, and Next Steps.' },
+      { label:'📝 Executive Summary',   prompt:'Write a concise executive summary in 3–5 paragraphs covering the main topic, key points, conclusions, and recommendations.' },
+      { label:'✅ Action Items',         prompt:'Extract all action items and decisions. Present as a numbered list with task, owner (if mentioned), and deadline (if mentioned).' },
+      { label:'📚 Lecture Notes',       prompt:'Convert this into well-structured study notes: main topic, key concepts, definitions, examples, and a summary.' },
+      { label:'📄 Professional Report', prompt:'Rewrite this as a formal report with: Executive Summary, Background, Discussion Points, Conclusions, and Recommendations.' },
+    ]
+
+    const activeTx      = computed(() => transcript.value || pastedTx.value)
+    const progressPct   = computed(() => Math.round(progress.value * 100))
+    const canTranscribe = computed(() => !!selectedFile.value && status.value === 'idle')
+    const isBusy        = computed(() => status.value === 'uploading' || status.value === 'transcribing')
+    const lastReply     = computed(() => [...chatHistory.value].reverse().find(m => m.role === 'assistant')?.content || '')
+
+    function onDrop(e) {
+      isDragging.value = false
+      const f = e.dataTransfer?.files?.[0]
+      if (f) selectedFile.value = f
+    }
+    function onFileInput(e) {
+      const f = e.target.files?.[0]
+      if (f) selectedFile.value = f
+    }
+    function removeFile() { selectedFile.value = null; reset() }
+
+    async function transcribe() {
+      if (!selectedFile.value) return
+      status.value   = 'uploading'
+      errMsg.value   = ''
+      wakeMsg.value  = ''
+      transcript.value = ''
+      progress.value = 0
+
+      const body = new FormData()
+      body.append('file',         selectedFile.value)
+      body.append('model',        model.value)
+      body.append('language',     language.value)
+      body.append('multilingual', String(multilingual.value))
+      body.append('task',         task.value)
+      body.append('key_terms',    keyTerms.value)
+
+      const wt = setTimeout(() => { if (status.value==='uploading') wakeMsg.value = '⏳ Uploading or server warming up… please wait.' }, 6000)
+      try {
+        const ctrl = new AbortController()
+        const tt   = setTimeout(() => ctrl.abort(), 120000)
+        const raw  = await fetch('/api/transcribe', { method:'POST', body, signal:ctrl.signal })
+        clearTimeout(tt); clearTimeout(wt); wakeMsg.value = ''
+        if (!raw.ok) { const d=await raw.json().catch(()=>({})); throw new Error(d.error||`Error ${raw.status}`) }
+        const data = await raw.json()
+        jobId.value  = data.job_id
+        status.value = 'transcribing'
+        startPoll()
+      } catch(e) {
+        clearTimeout(wt)
+        status.value = 'error'
+        errMsg.value = e.name==='AbortError' ? 'Upload timed out. Try again.' : (e.message||'Upload failed.')
+      }
+    }
+
+    function startPoll() {
+      stopPoll()
+      pollTimer = setInterval(async () => {
+        if (!jobId.value) return
+        try {
+          const r = await fetch(`/api/job/${jobId.value}`)
+          if (r.status===404) { status.value='error'; errMsg.value='Server restarted. Please upload again.'; stopPoll(); return }
+          const job = await r.json()
+          progress.value      = job.progress??0
+          progressDone.value  = job.done??0
+          progressTotal.value = job.total??0
+          if (job.lang)       detectedLang.value = job.lang
+          if (job.transcript) transcript.value   = job.transcript
+          if (job.status==='completed') { status.value='completed'; activeTab.value='transcript'; stopPoll() }
+          else if (job.status==='error') { status.value='error'; errMsg.value=job.error||'Failed.'; stopPoll() }
+        } catch { /* retry */ }
+      }, 2000)
+    }
+    function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer=null } }
+    function reset() { stopPoll(); status.value='idle'; jobId.value=null; progress.value=0; transcript.value=''; errMsg.value=''; detectedLang.value='' }
+
+    async function sendMsg() {
+      if (!userInput.value.trim()||aiLoading.value) return
+      const msg = userInput.value.trim(); userInput.value=''
+      aiLoading.value = true
+      chatHistory.value = [...chatHistory.value, { role:'user', content:msg }]
+      try {
+        const raw = await fetch('/api/ai/chat', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ transcript:activeTx.value, history:chatHistory.value.slice(0,-1), message:msg })
+        })
+        if (!raw.ok) { const d=await raw.json().catch(()=>({})); throw new Error(d.error||`Error ${raw.status}`) }
+        const data = await raw.json()
+        chatHistory.value = [...chatHistory.value, { role:'assistant', content:data.reply }]
+      } catch(e) {
+        chatHistory.value = [...chatHistory.value, { role:'assistant', content:`❌ ${e.message}` }]
+      } finally { aiLoading.value=false }
+    }
+
+    function useQuick(p) { userInput.value=p; activeTab.value='ai' }
+
+    async function dlDocx() {
+      if (!lastReply.value) return
+      try {
+        const raw = await fetch('/api/ai/docx', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ content:lastReply.value, title:'AI Document' }) })
+        if (!raw.ok) throw new Error('Failed to generate document.')
+        const blob = await raw.blob()
+        const url  = URL.createObjectURL(blob)
+        const a    = document.createElement('a'); a.href=url; a.download='document.docx'; a.click()
+        URL.revokeObjectURL(url)
+      } catch(e) { alert(e.message) }
+    }
+
+    function copyTx() { navigator.clipboard.writeText(activeTx.value) }
+    function renderMd(t) { return marked.parse(t||'') }
+    function fmtBytes(b) { return b<1048576 ? `${(b/1024).toFixed(0)} KB` : `${(b/1048576).toFixed(1)} MB` }
+    function fmtTime(s) { const m=Math.floor(s/60),sec=Math.floor(s%60); return m>0?`${m}m ${sec}s`:`${sec}s` }
+
+    watch(chatHistory, async () => { await nextTick(); if(chatEl.value) chatEl.value.scrollTop=chatEl.value.scrollHeight }, { deep:true })
+    onMounted(() => fetch('/api/health').catch(()=>{}))
+
+    return {
+      status, selectedFile, isDragging, progress, progressDone, progressTotal, detectedLang,
+      transcript, errMsg, wakeMsg, model, language, multilingual, task, keyTerms, showSettings,
+      chatHistory, aiLoading, userInput, pastedTx, activeTab, chatEl, quickPrompts,
+      activeTx, progressPct, canTranscribe, isBusy, lastReply,
+      onDrop, onFileInput, removeFile, transcribe, sendMsg, useQuick, dlDocx, copyTx, renderMd, fmtBytes, fmtTime
+    }
+  }
+}).mount('#app')
+</script>
+</body>
+</html>

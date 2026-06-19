@@ -11,7 +11,7 @@ import threading
 import datetime
 from pathlib import Path
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 
 from faster_whisper import WhisperModel
@@ -134,9 +134,17 @@ def _worker(job_id, audio_path, model_size, lang, task, multilingual, prompt):
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.route("/", methods=["GET", "HEAD"])
+@app.route("/", methods=["GET"])
 def root():
-    return jsonify({"status": "ok", "service": "AI Transcriber API"})
+    return render_template("index.html")
+
+@app.route("/", methods=["HEAD"])
+def root_head():
+    return "", 200
+
+@app.route("/api/health", methods=["GET", "HEAD"])
+def health():
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/transcribe", methods=["POST"])
