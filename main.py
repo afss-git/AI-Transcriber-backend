@@ -11,7 +11,7 @@ import threading
 import datetime
 from pathlib import Path
 
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 
 from faster_whisper import WhisperModel
@@ -136,7 +136,7 @@ def _worker(job_id, audio_path, model_size, lang, task, multilingual, prompt):
 
 @app.route("/", methods=["GET"])
 def root():
-    return render_template("index.html")
+    return send_from_directory(APP_DIR / "templates", "index.html")
 
 @app.route("/", methods=["HEAD"])
 def root_head():
