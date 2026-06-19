@@ -1,6 +1,6 @@
 """
-AI Transcriber — FastAPI backend
-Render deploy: build=pip install -r requirements.txt | start=uvicorn main:app --host 0.0.0.0 --port $PORT
+AI Transcriber — Flask backend
+Render: build=pip install -r requirements.txt | start=gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
 """
 
 import os
@@ -10,12 +10,9 @@ import json
 import threading
 import datetime
 from pathlib import Path
-from typing import List, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 
 from faster_whisper import WhisperModel
 
@@ -40,24 +37,15 @@ OUTPUT_DIR = APP_DIR / "outputs"
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ---------------------------------------------------------------------------
-app = FastAPI(title="AI Transcriber API", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-    max_age=600,
-)
+app = Flask(__name__)
+CORS(app)
 
 # ---------------------------------------------------------------------------
-# Whisper model cache
+# Model cache
 # ---------------------------------------------------------------------------
-MODEL_CACHE: dict = {}
+MODEL_CACHE = {}
 
-def get_model(size: str) -> WhisperModel:
+def get_model(size):
     if size not in MODEL_CACHE:
         MODEL_CACHE[size] = WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=4)
     return MODEL_CACHE[size]
@@ -67,29 +55,22 @@ def get_model(size: str) -> WhisperModel:
 # ---------------------------------------------------------------------------
 LINE_RE = re.compile(r"\[(\d+(?:\.\d+)?)s -> (\d+(?:\.\d+)?)s\]\s?(.*)")
 
-def _plain_text(raw: str) -> str:
+def _plain_text(raw):
     parts = []
     for line in raw.splitlines():
         m = LINE_RE.match(line.strip())
         parts.append(m.group(3) if m else line.strip())
     return " ".join(p for p in parts if p)
 
-def _srt_time(seconds: float) -> str:
-    h  = int(seconds // 3600)
-    m  = int((seconds % 3600) // 60)
-    s  = int(seconds % 60)
-    ms = int((seconds - int(seconds)) * 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
 # ---------------------------------------------------------------------------
 # Job persistence — survives server restarts
 # ---------------------------------------------------------------------------
-JOBS: dict = {}
+JOBS = {}
 
-def _meta_path(job_id: str) -> Path:
+def _meta_path(job_id):
     return OUTPUT_DIR / f"{job_id}.meta.json"
 
-def _save_job(job_id: str, job: dict):
+def _save_job(job_id, job):
     data = {k: v for k, v in job.items() if k != "txt_path"}
     try:
         with open(_meta_path(job_id), "w", encoding="utf-8") as f:
@@ -97,7 +78,7 @@ def _save_job(job_id: str, job: dict):
     except Exception:
         pass
 
-def _load_job(job_id: str) -> dict | None:
+def _load_job(job_id):
     path = _meta_path(job_id)
     if not path.exists():
         return None
@@ -105,7 +86,6 @@ def _load_job(job_id: str) -> dict | None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         data["txt_path"] = str(OUTPUT_DIR / f"{job_id}.txt")
-        # If the server restarted while the job was running, mark it as error
         if data.get("status") == "running":
             data["status"] = "error"
             data["error"]  = "Server restarted mid-job. Please upload again."
@@ -114,10 +94,9 @@ def _load_job(job_id: str) -> dict | None:
         return None
 
 # ---------------------------------------------------------------------------
-# Background transcription worker
+# Background worker
 # ---------------------------------------------------------------------------
-
-def _worker(job_id: str, audio_path: str, model_size: str, lang, task: str, multilingual: bool, prompt):
+def _worker(job_id, audio_path, model_size, lang, task, multilingual, prompt):
     job = JOBS[job_id]
     try:
         model = get_model(model_size)
@@ -155,26 +134,28 @@ def _worker(job_id: str, audio_path: str, model_size: str, lang, task: str, mult
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.route("/", methods=["GET", "HEAD"])
 def root():
-    return {"status": "ok", "service": "AI Transcriber API"}
+    return jsonify({"status": "ok", "service": "AI Transcriber API"})
 
 
-@app.post("/api/transcribe")
-async def start_transcribe(
-    file: UploadFile = File(...),
-    model: str      = Form("small"),
-    language: str   = Form("auto-detect"),
-    multilingual: bool = Form(False),
-    task: str       = Form("transcribe"),
-    key_terms: str  = Form(""),
-):
-    ext       = Path(file.filename or "audio.mp3").suffix or ".audio"
-    job_id    = str(uuid.uuid4())
+@app.route("/api/transcribe", methods=["POST"])
+def start_transcribe():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    file         = request.files["file"]
+    model_size   = request.form.get("model", "small")
+    language     = request.form.get("language", "auto-detect")
+    multilingual = request.form.get("multilingual", "false").lower() == "true"
+    task         = request.form.get("task", "transcribe")
+    key_terms    = request.form.get("key_terms", "")
+
+    ext        = Path(file.filename or "audio.mp3").suffix or ".audio"
+    job_id     = str(uuid.uuid4())
     audio_path = str(UPLOAD_DIR / f"{job_id}{ext}")
 
-    with open(audio_path, "wb") as f:
-        f.write(await file.read())
+    file.save(audio_path)
 
     txt_path = str(OUTPUT_DIR / f"{job_id}.txt")
     lang     = None if (language == "auto-detect" or multilingual) else language
@@ -192,18 +173,19 @@ async def start_transcribe(
 
     threading.Thread(
         target=_worker,
-        args=(job_id, audio_path, model, lang, task, multilingual, prompt),
+        args=(job_id, audio_path, model_size, lang, task, multilingual, prompt),
         daemon=True,
     ).start()
 
-    return {"job_id": job_id}
+    return jsonify({"job_id": job_id})
 
 
-@app.get("/api/job/{job_id}")
-def get_job(job_id: str):
+@app.route("/api/job/<job_id>", methods=["GET"])
+def get_job(job_id):
     job = JOBS.get(job_id) or _load_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        return jsonify({"error": "Job not found"}), 404
+
     transcript = ""
     if os.path.exists(job["txt_path"]):
         try:
@@ -211,7 +193,8 @@ def get_job(job_id: str):
                 transcript = f.read()
         except Exception:
             pass
-    return {
+
+    return jsonify({
         "job_id":     job_id,
         "status":     job["status"],
         "progress":   job["progress"],
@@ -220,68 +203,60 @@ def get_job(job_id: str):
         "lang":       job["lang"],
         "transcript": transcript,
         "error":      job.get("error"),
-    }
+    })
 
 
-# ---------------------------------------------------------------------------
-# AI routes
-# ---------------------------------------------------------------------------
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatRequest(BaseModel):
-    transcript: str
-    history:    List[ChatMessage] = []
-    message:    str
-
-@app.post("/api/ai/chat")
-def ai_chat(req: ChatRequest):
+@app.route("/api/ai/chat", methods=["POST"])
+def ai_chat():
     if not GROQ_AVAILABLE:
-        raise HTTPException(status_code=500, detail="Groq package not installed on server.")
+        return jsonify({"error": "Groq not installed"}), 500
     if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY environment variable not set.")
-    if not req.transcript.strip():
-        raise HTTPException(status_code=400, detail="No transcript provided.")
+        return jsonify({"error": "GROQ_API_KEY not set"}), 500
 
-    plain  = _plain_text(req.transcript)
+    data       = request.get_json(force=True)
+    transcript = data.get("transcript", "")
+    history    = data.get("history", [])
+    message    = data.get("message", "")
+
+    if not transcript.strip():
+        return jsonify({"error": "No transcript provided"}), 400
+
+    plain  = _plain_text(transcript)
     system = (
         "You are a professional document assistant. The user has transcribed an audio recording "
         "and wants help processing it into a useful document.\n\n"
         f"FULL TRANSCRIPT:\n---\n{plain[:12000]}\n---\n\n"
-        "Help with whatever the user asks. Be clear, professional, and well-structured. "
-        "Use markdown: ## for headings, **bold** for key terms, - for bullet lists."
+        "Be clear, professional, and well-structured. Use markdown: ## for headings, **bold** for key terms, - for bullets."
     )
 
     messages = [{"role": "system", "content": system}]
-    for msg in req.history:
-        messages.append({"role": msg.role, "content": msg.content})
-    messages.append({"role": "user", "content": req.message})
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": message})
 
     try:
         client = Groq(api_key=GROQ_API_KEY)
         resp   = client.chat.completions.create(
             model=GROQ_MODEL, messages=messages, max_tokens=4096, temperature=0.3
         )
-        return {"reply": resp.choices[0].message.content}
+        return jsonify({"reply": resp.choices[0].message.content})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return jsonify({"error": str(e)}), 500
 
 
-class DocxRequest(BaseModel):
-    content: str
-    title:   str = "Document"
-
-@app.post("/api/ai/docx")
-def generate_docx(req: DocxRequest):
+@app.route("/api/ai/docx", methods=["POST"])
+def generate_docx():
     if not DOCX_AVAILABLE:
-        raise HTTPException(status_code=500, detail="python-docx not installed on server.")
+        return jsonify({"error": "python-docx not installed"}), 500
+
+    data    = request.get_json(force=True)
+    content = data.get("content", "")
+    title   = data.get("title", "Document")
 
     doc = DocxDoc()
-    doc.add_heading(req.title, 0)
+    doc.add_heading(title, 0)
 
-    for line in req.content.splitlines():
+    for line in content.splitlines():
         line = line.strip()
         if not line:
             doc.add_paragraph()
@@ -306,13 +281,13 @@ def generate_docx(req: DocxRequest):
     out_path = str(OUTPUT_DIR / f"document_{ts}.docx")
     doc.save(out_path)
 
-    return FileResponse(
+    return send_file(
         out_path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=f"document_{ts}.docx",
+        as_attachment=True,
+        download_name=f"document_{ts}.docx",
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), debug=False)

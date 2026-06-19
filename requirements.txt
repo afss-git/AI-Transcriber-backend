@@ -1,6 +1,6 @@
 faster-whisper
 groq
 python-docx
-fastapi
-uvicorn[standard]
-python-multipart
+flask
+flask-cors
+gunicorn
